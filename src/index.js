@@ -15,7 +15,7 @@ const FALLBACK_TEXT = 'Не знаю такой команды. Отправьт
 // resolves `?gift=<code>` through that same table, so a code redeemed via
 // this bot and the same code typed into the in-game promo modal are one
 // redemption, not two.
-const PROMO_CODES = ['kirillpidor2t', 'vanyafree', 'luck35', 'newcases'];
+const PROMO_CODES = ['kirillpidor2t', 'vanyafree', 'luck35', 'newcases', 'specialbonus'];
 
 function normalizePromo(text) {
   return text.trim().toLowerCase();
