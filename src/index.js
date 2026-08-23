@@ -11,6 +11,16 @@ const WELCOME_TEXT =
 
 const FALLBACK_TEXT = 'Не знаю такой команды. Отправьте /start, чтобы открыть игру.';
 
+// Keep in sync with src/data/promoCodes.ts in the game repo — the game
+// resolves `?gift=<code>` through that same table, so a code redeemed via
+// this bot and the same code typed into the in-game promo modal are one
+// redemption, not two.
+const PROMO_CODES = ['kirillpodor2t'];
+
+function normalizePromo(text) {
+  return text.trim().toLowerCase();
+}
+
 async function sendMessage(token, chatId, text, replyMarkup) {
   await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
@@ -53,6 +63,11 @@ export default {
 
     if (text === '/start' || text === '/help') {
       await sendMessage(env.BOT_TOKEN, chatId, WELCOME_TEXT, OPEN_GARDEN_KEYBOARD);
+    } else if (PROMO_CODES.includes(normalizePromo(text))) {
+      const giftUrl = `${APP_URL}?gift=${encodeURIComponent(normalizePromo(text))}`;
+      await sendMessage(env.BOT_TOKEN, chatId, '🎉 Промокод принят! Нажмите кнопку, чтобы забрать бонус.', {
+        inline_keyboard: [[{ text: '🎁 Забрать бонус', web_app: { url: giftUrl } }]],
+      });
     } else {
       await sendMessage(env.BOT_TOKEN, chatId, FALLBACK_TEXT, OPEN_GARDEN_KEYBOARD);
     }
