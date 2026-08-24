@@ -207,14 +207,25 @@ export default {
       // A self-referral (someone opening their own link) pays out nothing —
       // dedup on the game side is per browser, not per Telegram account, so
       // without this check the same person could farm their own bonus.
-      if (String(referrerId) !== String(chatId)) {
-        const giftUrl = `${appUrl}?gift=${encodeURIComponent(`ref:${referrerId}:${chatId}`)}`;
-        await sendMessage(
-          env.BOT_TOKEN,
-          referrerId,
-          '🎉 По вашей ссылке в сад пришёл новый садовод! Нажмите кнопку, чтобы забрать бонус.',
-          { inline_keyboard: [[{ text: '🎁 Забрать бонус', web_app: { url: giftUrl } }]] },
-        );
+      //
+      // Each invited person is locked to whoever referred them first —
+      // 'referred:<chatId>' records that once and never gets overwritten,
+      // so re-visiting a different referral link later (or the same one
+      // again) doesn't let someone collect a second referrer's bonus off
+      // the same account, and doesn't spam a second referrer with a
+      // notification for a person who was never really "theirs".
+      if (String(referrerId) !== String(chatId) && env.USERS) {
+        const alreadyReferred = await env.USERS.get(`referred:${chatId}`);
+        if (!alreadyReferred) {
+          ctx.waitUntil(env.USERS.put(`referred:${chatId}`, referrerId));
+          const giftUrl = `${appUrl}?gift=${encodeURIComponent(`ref:${referrerId}:${chatId}`)}`;
+          await sendMessage(
+            env.BOT_TOKEN,
+            referrerId,
+            '🎉 По вашей ссылке в сад пришёл новый садовод! Нажмите кнопку, чтобы забрать бонус.',
+            { inline_keyboard: [[{ text: '🎁 Забрать бонус', web_app: { url: giftUrl } }]] },
+          );
+        }
       }
       await sendMessage(env.BOT_TOKEN, chatId, welcomeText(), gardenKeyboard);
     } else if (startMatch || text === '/help') {
