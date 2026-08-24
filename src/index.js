@@ -1,4 +1,6 @@
 const APP_URL = 'https://uhfff.github.io/leaf-garden/';
+const BOT_USERNAME = 'LeafSimulatorBot';
+const REFERRAL_BONUS_LEAVES = '5 триллионов';
 const OPEN_GARDEN_KEYBOARD = {
   inline_keyboard: [[{ text: '🌱 Открыть сад', web_app: { url: APP_URL } }]],
 };
@@ -7,9 +9,21 @@ const WELCOME_TEXT =
   'Листопад 🌳\n\n' +
   'Idle-игра про сад: сажаете деревья, поливаете, удобряете и улучшаете их, ' +
   'копите листья. Чем дольше дерево растёт, тем больше приносит.\n\n' +
-  'Нажмите кнопку ниже, чтобы открыть игру.';
+  'Нажмите кнопку ниже, чтобы открыть игру. Команда /invite — ваша ' +
+  'реферальная ссылка.';
 
 const FALLBACK_TEXT = 'Не знаю такой команды. Отправьте /start, чтобы открыть игру.';
+
+function referralLink(chatId) {
+  return `https://t.me/${BOT_USERNAME}?start=ref${chatId}`;
+}
+
+function inviteText(chatId) {
+  return (
+    `Ваша реферальная ссылка:\n${referralLink(chatId)}\n\n` +
+    `За каждого друга, который откроет сад по этой ссылке, вы получите ${REFERRAL_BONUS_LEAVES} 🍃.`
+  );
+}
 
 // Keep in sync with src/data/promoCodes.ts in the game repo — the game
 // resolves `?gift=<code>` through that same table, so a code redeemed via
@@ -60,9 +74,28 @@ export default {
 
     const chatId = message.chat.id;
     const text = (message.text || '').trim();
+    const startMatch = text.match(/^\/start(?:\s+(\S+))?$/);
+    const refMatch = startMatch?.[1]?.match(/^ref(\d+)$/);
 
-    if (text === '/start' || text === '/help') {
+    if (refMatch) {
+      const referrerId = refMatch[1];
+      // A self-referral (someone opening their own link) pays out nothing —
+      // dedup on the game side is per browser, not per Telegram account, so
+      // without this check the same person could farm their own bonus.
+      if (String(referrerId) !== String(chatId)) {
+        const giftUrl = `${APP_URL}?gift=${encodeURIComponent(`ref:${referrerId}:${chatId}`)}`;
+        await sendMessage(
+          env.BOT_TOKEN,
+          referrerId,
+          '🎉 По вашей ссылке в сад пришёл новый садовод! Нажмите кнопку, чтобы забрать бонус.',
+          { inline_keyboard: [[{ text: '🎁 Забрать бонус', web_app: { url: giftUrl } }]] },
+        );
+      }
       await sendMessage(env.BOT_TOKEN, chatId, WELCOME_TEXT, OPEN_GARDEN_KEYBOARD);
+    } else if (startMatch || text === '/help') {
+      await sendMessage(env.BOT_TOKEN, chatId, WELCOME_TEXT, OPEN_GARDEN_KEYBOARD);
+    } else if (text === '/invite') {
+      await sendMessage(env.BOT_TOKEN, chatId, inviteText(chatId), OPEN_GARDEN_KEYBOARD);
     } else if (PROMO_CODES.includes(normalizePromo(text))) {
       const giftUrl = `${APP_URL}?gift=${encodeURIComponent(normalizePromo(text))}`;
       await sendMessage(env.BOT_TOKEN, chatId, '🎉 Промокод принят! Нажмите кнопку, чтобы забрать бонус.', {
