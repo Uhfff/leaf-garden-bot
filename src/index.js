@@ -1,26 +1,33 @@
-const APP_URL = 'https://uhfff.github.io/leaf-garden/';
-const BOT_USERNAME = 'LeafSimulatorBot';
+// Defaults target the live game/bot. A staging deploy overrides both via
+// plain (non-secret) wrangler vars — `--var APP_URL:... --var BOT_USERNAME:...`
+// — so the same source file can run as either without a fork.
+const DEFAULT_APP_URL = 'https://uhfff.github.io/leaf-garden/';
+const DEFAULT_BOT_USERNAME = 'LeafSimulatorBot';
 const REFERRAL_BONUS_LEAVES = '5 триллионов';
-const OPEN_GARDEN_KEYBOARD = {
-  inline_keyboard: [[{ text: '🌱 Открыть сад', web_app: { url: APP_URL } }]],
-};
 
-const WELCOME_TEXT =
-  'Листопад 🌳\n\n' +
-  'Idle-игра про сад: сажаете деревья, поливаете, удобряете и улучшаете их, ' +
-  'копите листья. Чем дольше дерево растёт, тем больше приносит.\n\n' +
-  'Нажмите кнопку ниже, чтобы открыть игру. Команда /invite — ваша ' +
-  'реферальная ссылка.';
+function openGardenKeyboard(appUrl) {
+  return { inline_keyboard: [[{ text: '🌱 Открыть сад', web_app: { url: appUrl } }]] };
+}
+
+function welcomeText() {
+  return (
+    'Листопад 🌳\n\n' +
+    'Idle-игра про сад: сажаете деревья, поливаете, удобряете и улучшаете их, ' +
+    'копите листья. Чем дольше дерево растёт, тем больше приносит.\n\n' +
+    'Нажмите кнопку ниже, чтобы открыть игру. Команда /invite — ваша ' +
+    'реферальная ссылка.'
+  );
+}
 
 const FALLBACK_TEXT = 'Не знаю такой команды. Отправьте /start, чтобы открыть игру.';
 
-function referralLink(chatId) {
-  return `https://t.me/${BOT_USERNAME}?start=ref${chatId}`;
+function referralLink(botUsername, chatId) {
+  return `https://t.me/${botUsername}?start=ref${chatId}`;
 }
 
-function inviteText(chatId) {
+function inviteText(botUsername, chatId) {
   return (
-    `Ваша реферальная ссылка:\n${referralLink(chatId)}\n\n` +
+    `Ваша реферальная ссылка:\n${referralLink(botUsername, chatId)}\n\n` +
     `За каждого друга, который откроет сад по этой ссылке, вы получите ${REFERRAL_BONUS_LEAVES} 🍃.`
   );
 }
@@ -72,6 +79,10 @@ export default {
     const message = update.message;
     if (!message || !message.chat) return new Response('OK');
 
+    const appUrl = env.APP_URL || DEFAULT_APP_URL;
+    const botUsername = env.BOT_USERNAME || DEFAULT_BOT_USERNAME;
+    const gardenKeyboard = openGardenKeyboard(appUrl);
+
     const chatId = message.chat.id;
     const text = (message.text || '').trim();
     const startMatch = text.match(/^\/start(?:\s+(\S+))?$/);
@@ -83,7 +94,7 @@ export default {
       // dedup on the game side is per browser, not per Telegram account, so
       // without this check the same person could farm their own bonus.
       if (String(referrerId) !== String(chatId)) {
-        const giftUrl = `${APP_URL}?gift=${encodeURIComponent(`ref:${referrerId}:${chatId}`)}`;
+        const giftUrl = `${appUrl}?gift=${encodeURIComponent(`ref:${referrerId}:${chatId}`)}`;
         await sendMessage(
           env.BOT_TOKEN,
           referrerId,
@@ -91,18 +102,18 @@ export default {
           { inline_keyboard: [[{ text: '🎁 Забрать бонус', web_app: { url: giftUrl } }]] },
         );
       }
-      await sendMessage(env.BOT_TOKEN, chatId, WELCOME_TEXT, OPEN_GARDEN_KEYBOARD);
+      await sendMessage(env.BOT_TOKEN, chatId, welcomeText(), gardenKeyboard);
     } else if (startMatch || text === '/help') {
-      await sendMessage(env.BOT_TOKEN, chatId, WELCOME_TEXT, OPEN_GARDEN_KEYBOARD);
+      await sendMessage(env.BOT_TOKEN, chatId, welcomeText(), gardenKeyboard);
     } else if (text === '/invite') {
-      await sendMessage(env.BOT_TOKEN, chatId, inviteText(chatId), OPEN_GARDEN_KEYBOARD);
+      await sendMessage(env.BOT_TOKEN, chatId, inviteText(botUsername, chatId), gardenKeyboard);
     } else if (PROMO_CODES.includes(normalizePromo(text))) {
-      const giftUrl = `${APP_URL}?gift=${encodeURIComponent(normalizePromo(text))}`;
+      const giftUrl = `${appUrl}?gift=${encodeURIComponent(normalizePromo(text))}`;
       await sendMessage(env.BOT_TOKEN, chatId, '🎉 Промокод принят! Нажмите кнопку, чтобы забрать бонус.', {
         inline_keyboard: [[{ text: '🎁 Забрать бонус', web_app: { url: giftUrl } }]],
       });
     } else {
-      await sendMessage(env.BOT_TOKEN, chatId, FALLBACK_TEXT, OPEN_GARDEN_KEYBOARD);
+      await sendMessage(env.BOT_TOKEN, chatId, FALLBACK_TEXT, gardenKeyboard);
     }
 
     return new Response('OK');
