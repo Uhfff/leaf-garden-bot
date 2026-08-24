@@ -38,6 +38,27 @@ function inviteText(botUsername, chatId) {
 // redemption, not two.
 const PROMO_CODES = ['kirillpidor2t', 'vanyafree', 'luck35', 'newcases', 'specialbonus', 'tree67x3', 'luck67', 'megabonus'];
 
+// Only this Telegram username may run /stats in chat — everyone else's
+// attempt just falls through to the normal fallback reply, same as any
+// other command the bot doesn't recognize.
+const STATS_OWNER_USERNAME = 'temamodelka';
+
+// Mirrors src/game/economy.ts's formatLeaves so the numbers in a /stats
+// reply read the same way the game itself displays them.
+function formatLeaves(n) {
+  const sign = n < 0 ? '-' : '';
+  const v = Math.abs(n);
+  if (v < 1000) return sign + v.toFixed(v < 10 ? 1 : 0);
+  const units = ['K', 'M', 'B', 'T'];
+  let unit = -1;
+  let val = v;
+  while (val >= 1000 && unit < units.length - 1) {
+    val /= 1000;
+    unit++;
+  }
+  return `${sign}${val.toFixed(val < 10 ? 2 : 1)}${units[unit]}`;
+}
+
 function normalizePromo(text) {
   return text.trim().toLowerCase();
 }
@@ -152,6 +173,46 @@ async function handleStatsRead(request, env) {
   return new Response(JSON.stringify(players), { headers: { 'Content-Type': 'application/json' } });
 }
 
+/** Same data /stats (HTTP) reports, formatted for a chat reply. */
+async function statsSummaryText(env) {
+  if (!env.USERS) return 'Статистика недоступна — не подключено хранилище.';
+
+  let totalUsers = 0;
+  let cursor;
+  do {
+    const page = await env.USERS.list({ prefix: 'user:', cursor });
+    totalUsers += page.keys.length;
+    cursor = page.cursor;
+  } while (cursor);
+
+  const players = [];
+  cursor = undefined;
+  do {
+    const page = await env.USERS.list({ prefix: 'stats:', cursor });
+    for (const key of page.keys) {
+      const raw = await env.USERS.get(key.name);
+      if (raw) players.push(JSON.parse(raw));
+    }
+    cursor = page.cursor;
+  } while (cursor);
+
+  const now = Date.now();
+  const withTrees = players.filter((p) => (p.trees || []).length > 0).length;
+  const activeRecently = players.filter((p) => now - (p.updatedAt || 0) < 10 * 60 * 1000).length;
+  const totalTrees = players.reduce((sum, p) => sum + (p.trees ? p.trees.length : 0), 0);
+  const totalLeaves = players.reduce((sum, p) => sum + (p.leaves || 0), 0);
+
+  return (
+    '📊 Статистика\n\n' +
+    `Писали боту: ${totalUsers}\n` +
+    `Открывали игру: ${players.length}\n` +
+    `С посаженными деревьями: ${withTrees}\n` +
+    `Активны за последние 10 мин: ${activeRecently}\n` +
+    `Всего деревьев посажено: ${totalTrees}\n` +
+    `Листьев на руках у всех: ${formatLeaves(totalLeaves)} 🍃`
+  );
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -232,6 +293,8 @@ export default {
       await sendMessage(env.BOT_TOKEN, chatId, welcomeText(), gardenKeyboard);
     } else if (text === '/invite') {
       await sendMessage(env.BOT_TOKEN, chatId, inviteText(botUsername, chatId), gardenKeyboard);
+    } else if (text === '/stats' && (message.from?.username || '').toLowerCase() === STATS_OWNER_USERNAME) {
+      await sendMessage(env.BOT_TOKEN, chatId, await statsSummaryText(env));
     } else if (PROMO_CODES.includes(normalizePromo(text))) {
       const giftUrl = `${appUrl}?gift=${encodeURIComponent(normalizePromo(text))}`;
       await sendMessage(env.BOT_TOKEN, chatId, '🎉 Промокод принят! Нажмите кнопку, чтобы забрать бонус.', {
