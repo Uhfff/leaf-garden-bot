@@ -1,3 +1,11 @@
 name = "leaf-garden-bot"
 main = "src/index.js"
 compatibility_date = "2025-01-01"
+
+# Records every chat id that has ever messaged the bot, so a future
+# broadcast (see the /broadcast route in src/index.js) has someone to
+# send to. Only bound here — the staging deploy runs without it, and the
+# write is skipped when the binding is absent.
+[[kv_namespaces]]
+binding = "USERS"
+id = "d480047ca477456fb148ac849f861f8e"

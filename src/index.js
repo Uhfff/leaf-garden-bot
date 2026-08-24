@@ -43,7 +43,7 @@ function normalizePromo(text) {
 }
 
 async function sendMessage(token, chatId, text, replyMarkup) {
-  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+  const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -52,12 +52,55 @@ async function sendMessage(token, chatId, text, replyMarkup) {
       reply_markup: replyMarkup,
     }),
   });
+  return res.ok;
+}
+
+/** Admin-only route, not part of the Telegram webhook contract — Telegram
+ *  always POSTs updates to the root path, so /broadcast is free to use for
+ *  this. Guarded by its own secret (BROADCAST_SECRET) rather than chat id,
+ *  since we don't hardcode who the bot's owner is. Sends `text` to every
+ *  chat id the USERS KV has ever recorded — the only "everyone" the bot
+ *  knows about, since it never had a user list before this route existed. */
+async function handleBroadcast(request, env) {
+  if (!env.BROADCAST_SECRET || request.headers.get('X-Broadcast-Secret') !== env.BROADCAST_SECRET) {
+    return new Response('Forbidden', { status: 403 });
+  }
+  if (!env.USERS) {
+    return new Response('No USERS KV bound on this worker.', { status: 400 });
+  }
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response('Expected JSON body: { "text": "..." }', { status: 400 });
+  }
+  if (!body.text) return new Response('Missing "text".', { status: 400 });
+
+  let sent = 0;
+  let failed = 0;
+  let cursor;
+  do {
+    const page = await env.USERS.list({ cursor });
+    for (const key of page.keys) {
+      const ok = await sendMessage(env.BOT_TOKEN, key.name, body.text);
+      if (ok) sent++;
+      else failed++;
+    }
+    cursor = page.cursor;
+  } while (cursor);
+
+  return new Response(JSON.stringify({ sent, failed }), { headers: { 'Content-Type': 'application/json' } });
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     if (request.method !== 'POST') {
       return new Response('Leaf Garden bot is running.');
+    }
+
+    const url = new URL(request.url);
+    if (url.pathname === '/broadcast') {
+      return handleBroadcast(request, env);
     }
 
     // Telegram lets a webhook require a shared secret header so random
@@ -84,6 +127,9 @@ export default {
     const gardenKeyboard = openGardenKeyboard(appUrl);
 
     const chatId = message.chat.id;
+    // Records every chat id that has ever messaged the bot, so a future
+    // broadcast has someone to reach — best-effort, doesn't block the reply.
+    if (env.USERS) ctx.waitUntil(env.USERS.put(String(chatId), String(Date.now())));
     const text = (message.text || '').trim();
     const startMatch = text.match(/^\/start(?:\s+(\S+))?$/);
     const refMatch = startMatch?.[1]?.match(/^ref(\d+)$/);
