@@ -36,7 +36,7 @@ function inviteText(botUsername, chatId) {
 // resolves `?gift=<code>` through that same table, so a code redeemed via
 // this bot and the same code typed into the in-game promo modal are one
 // redemption, not two.
-const PROMO_CODES = ['kirillpidor2t', 'vanyafree', 'luck35', 'newcases', 'specialbonus', 'tree67x3'];
+const PROMO_CODES = ['kirillpidor2t', 'vanyafree', 'luck35', 'newcases', 'specialbonus', 'tree67x3', 'luck67', 'megabonus'];
 
 function normalizePromo(text) {
   return text.trim().toLowerCase();
