@@ -80,9 +80,12 @@ async function handleBroadcast(request, env) {
   let failed = 0;
   let cursor;
   do {
-    const page = await env.USERS.list({ cursor });
+    // 'user:' prefix keeps this scoped to real chat-id registrations —
+    // the KV also holds 'stats:<id>' entries that aren't valid recipients.
+    const page = await env.USERS.list({ prefix: 'user:', cursor });
     for (const key of page.keys) {
-      const ok = await sendMessage(env.BOT_TOKEN, key.name, body.text);
+      const chatId = key.name.slice('user:'.length);
+      const ok = await sendMessage(env.BOT_TOKEN, chatId, body.text);
       if (ok) sent++;
       else failed++;
     }
@@ -92,13 +95,78 @@ async function handleBroadcast(request, env) {
   return new Response(JSON.stringify({ sent, failed }), { headers: { 'Content-Type': 'application/json' } });
 }
 
+// The game posts stats from the browser (uhfff.github.io), a different
+// origin than this worker, so the write route needs CORS headers or the
+// browser drops the request before it ever reaches here.
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
+
+/** The game posts a snapshot of one player's state here on load and every
+ *  minute after, keyed by their Telegram id — the only identity it has,
+ *  and only available inside the Mini App. Unauthenticated: this is
+ *  telemetry about the sender's own play, not something worth guarding. */
+async function handleStatsWrite(request, env) {
+  if (!env.USERS) return new Response('No USERS KV bound on this worker.', { status: 400, headers: CORS_HEADERS });
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response('Expected JSON body.', { status: 400, headers: CORS_HEADERS });
+  }
+  if (!body.chatId) return new Response('Missing "chatId".', { status: 400, headers: CORS_HEADERS });
+  await env.USERS.put(
+    `stats:${body.chatId}`,
+    JSON.stringify({
+      leaves: body.leaves,
+      totalEarned: body.totalEarned,
+      incomePerSec: body.incomePerSec,
+      trees: body.trees,
+      updatedAt: Date.now(),
+    }),
+  );
+  return new Response('OK', { headers: CORS_HEADERS });
+}
+
+/** Admin-only, same secret as /broadcast — returns every stats snapshot
+ *  currently on file. */
+async function handleStatsRead(request, env) {
+  if (!env.BROADCAST_SECRET || request.headers.get('X-Broadcast-Secret') !== env.BROADCAST_SECRET) {
+    return new Response('Forbidden', { status: 403 });
+  }
+  if (!env.USERS) return new Response('No USERS KV bound on this worker.', { status: 400 });
+
+  const players = [];
+  let cursor;
+  do {
+    const page = await env.USERS.list({ prefix: 'stats:', cursor });
+    for (const key of page.keys) {
+      const raw = await env.USERS.get(key.name);
+      if (raw) players.push({ chatId: key.name.slice('stats:'.length), ...JSON.parse(raw) });
+    }
+    cursor = page.cursor;
+  } while (cursor);
+
+  return new Response(JSON.stringify(players), { headers: { 'Content-Type': 'application/json' } });
+}
+
 export default {
   async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
+    if (url.pathname === '/stats' && request.method === 'OPTIONS') {
+      return new Response(null, { headers: CORS_HEADERS });
+    }
+    if (url.pathname === '/stats') {
+      return request.method === 'POST' ? handleStatsWrite(request, env) : handleStatsRead(request, env);
+    }
+
     if (request.method !== 'POST') {
       return new Response('Leaf Garden bot is running.');
     }
 
-    const url = new URL(request.url);
     if (url.pathname === '/broadcast') {
       return handleBroadcast(request, env);
     }
@@ -129,7 +197,7 @@ export default {
     const chatId = message.chat.id;
     // Records every chat id that has ever messaged the bot, so a future
     // broadcast has someone to reach — best-effort, doesn't block the reply.
-    if (env.USERS) ctx.waitUntil(env.USERS.put(String(chatId), String(Date.now())));
+    if (env.USERS) ctx.waitUntil(env.USERS.put(`user:${chatId}`, String(Date.now())));
     const text = (message.text || '').trim();
     const startMatch = text.match(/^\/start(?:\s+(\S+))?$/);
     const refMatch = startMatch?.[1]?.match(/^ref(\d+)$/);
