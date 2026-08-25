@@ -36,7 +36,7 @@ function inviteText(botUsername, chatId) {
 // resolves `?gift=<code>` through that same table, so a code redeemed via
 // this bot and the same code typed into the in-game promo modal are one
 // redemption, not two.
-const PROMO_CODES = ['luck35', 'newcases', 'tree67x3', 'luck67', 'exclusive50'];
+const PROMO_CODES = ['luck35', 'newcases', 'tree67x3', 'luck67', 'exclusive50', 'luck10'];
 
 // Only this Telegram username may run /stats in chat — everyone else's
 // attempt just falls through to the normal fallback reply, same as any
