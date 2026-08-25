@@ -80,14 +80,15 @@ async function sendMessage(token, chatId, text, replyMarkup) {
  *  always POSTs updates to the root path, so /broadcast is free to use for
  *  this. Guarded by its own secret (BROADCAST_SECRET) rather than chat id,
  *  since we don't hardcode who the bot's owner is. Sends `text` to every
- *  chat id the USERS KV has ever recorded — the only "everyone" the bot
- *  knows about, since it never had a user list before this route existed. */
+ *  chat id the `users` D1 table has ever recorded — the only "everyone"
+ *  the bot knows about, since it never had a user list before this route
+ *  existed. */
 async function handleBroadcast(request, env) {
   if (!env.BROADCAST_SECRET || request.headers.get('X-Broadcast-Secret') !== env.BROADCAST_SECRET) {
     return new Response('Forbidden', { status: 403 });
   }
-  if (!env.USERS) {
-    return new Response('No USERS KV bound on this worker.', { status: 400 });
+  if (!env.DB) {
+    return new Response('No DB bound on this worker.', { status: 400 });
   }
   let body;
   try {
@@ -97,21 +98,14 @@ async function handleBroadcast(request, env) {
   }
   if (!body.text) return new Response('Missing "text".', { status: 400 });
 
+  const { results } = await env.DB.prepare('SELECT chat_id FROM users').all();
   let sent = 0;
   let failed = 0;
-  let cursor;
-  do {
-    // 'user:' prefix keeps this scoped to real chat-id registrations —
-    // the KV also holds 'stats:<id>' entries that aren't valid recipients.
-    const page = await env.USERS.list({ prefix: 'user:', cursor });
-    for (const key of page.keys) {
-      const chatId = key.name.slice('user:'.length);
-      const ok = await sendMessage(env.BOT_TOKEN, chatId, body.text);
-      if (ok) sent++;
-      else failed++;
-    }
-    cursor = page.cursor;
-  } while (cursor);
+  for (const row of results) {
+    const ok = await sendMessage(env.BOT_TOKEN, row.chat_id, body.text);
+    if (ok) sent++;
+    else failed++;
+  }
 
   return new Response(JSON.stringify({ sent, failed }), { headers: { 'Content-Type': 'application/json' } });
 }
@@ -126,11 +120,14 @@ const CORS_HEADERS = {
 };
 
 /** The game posts a snapshot of one player's state here on load and every
- *  minute after, keyed by their Telegram id — the only identity it has,
- *  and only available inside the Mini App. Unauthenticated: this is
- *  telemetry about the sender's own play, not something worth guarding. */
+ *  10 minutes after, keyed by their Telegram id — the only identity it
+ *  has, and only available inside the Mini App. Unauthenticated: this is
+ *  telemetry about the sender's own play, not something worth guarding.
+ *  Lives in D1 rather than KV — this write happens continuously for
+ *  every active player, and KV's free tier caps out at 1,000 writes/day
+ *  total; D1's is orders of magnitude higher. */
 async function handleStatsWrite(request, env) {
-  if (!env.USERS) return new Response('No USERS KV bound on this worker.', { status: 400, headers: CORS_HEADERS });
+  if (!env.DB) return new Response('No DB bound on this worker.', { status: 400, headers: CORS_HEADERS });
   let body;
   try {
     body = await request.json();
@@ -138,16 +135,25 @@ async function handleStatsWrite(request, env) {
     return new Response('Expected JSON body.', { status: 400, headers: CORS_HEADERS });
   }
   if (!body.chatId) return new Response('Missing "chatId".', { status: 400, headers: CORS_HEADERS });
-  await env.USERS.put(
-    `stats:${body.chatId}`,
-    JSON.stringify({
-      leaves: body.leaves,
-      totalEarned: body.totalEarned,
-      incomePerSec: body.incomePerSec,
-      trees: body.trees,
-      updatedAt: Date.now(),
-    }),
-  );
+  await env.DB.prepare(
+    `INSERT INTO stats (chat_id, leaves, total_earned, income_per_sec, trees, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(chat_id) DO UPDATE SET
+       leaves = excluded.leaves,
+       total_earned = excluded.total_earned,
+       income_per_sec = excluded.income_per_sec,
+       trees = excluded.trees,
+       updated_at = excluded.updated_at`,
+  )
+    .bind(
+      String(body.chatId),
+      body.leaves,
+      body.totalEarned,
+      body.incomePerSec,
+      JSON.stringify(body.trees || []),
+      Date.now(),
+    )
+    .run();
   return new Response('OK', { headers: CORS_HEADERS });
 }
 
@@ -157,55 +163,45 @@ async function handleStatsRead(request, env) {
   if (!env.BROADCAST_SECRET || request.headers.get('X-Broadcast-Secret') !== env.BROADCAST_SECRET) {
     return new Response('Forbidden', { status: 403 });
   }
-  if (!env.USERS) return new Response('No USERS KV bound on this worker.', { status: 400 });
+  if (!env.DB) return new Response('No DB bound on this worker.', { status: 400 });
 
-  const players = [];
-  let cursor;
-  do {
-    const page = await env.USERS.list({ prefix: 'stats:', cursor });
-    for (const key of page.keys) {
-      const raw = await env.USERS.get(key.name);
-      if (raw) players.push({ chatId: key.name.slice('stats:'.length), ...JSON.parse(raw) });
-    }
-    cursor = page.cursor;
-  } while (cursor);
+  const { results } = await env.DB.prepare('SELECT * FROM stats').all();
+  const players = results.map((row) => ({
+    chatId: row.chat_id,
+    leaves: row.leaves,
+    totalEarned: row.total_earned,
+    incomePerSec: row.income_per_sec,
+    trees: JSON.parse(row.trees),
+    updatedAt: row.updated_at,
+  }));
 
   return new Response(JSON.stringify(players), { headers: { 'Content-Type': 'application/json' } });
 }
 
 /** Same data /stats (HTTP) reports, formatted for a chat reply. */
 async function statsSummaryText(env) {
-  if (!env.USERS) return 'Статистика недоступна — не подключено хранилище.';
+  if (!env.DB) return 'Статистика недоступна — не подключено хранилище.';
 
-  let totalUsers = 0;
-  let cursor;
-  do {
-    const page = await env.USERS.list({ prefix: 'user:', cursor });
-    totalUsers += page.keys.length;
-    cursor = page.cursor;
-  } while (cursor);
-
-  const players = [];
-  cursor = undefined;
-  do {
-    const page = await env.USERS.list({ prefix: 'stats:', cursor });
-    for (const key of page.keys) {
-      const raw = await env.USERS.get(key.name);
-      if (raw) players.push(JSON.parse(raw));
-    }
-    cursor = page.cursor;
-  } while (cursor);
+  const userCountRow = await env.DB.prepare('SELECT COUNT(*) AS c FROM users').first();
+  const { results: statsRows } = await env.DB.prepare('SELECT leaves, trees, updated_at FROM stats').all();
 
   const now = Date.now();
-  const withTrees = players.filter((p) => (p.trees || []).length > 0).length;
-  const activeRecently = players.filter((p) => now - (p.updatedAt || 0) < 10 * 60 * 1000).length;
-  const totalTrees = players.reduce((sum, p) => sum + (p.trees ? p.trees.length : 0), 0);
-  const totalLeaves = players.reduce((sum, p) => sum + (p.leaves || 0), 0);
+  let withTrees = 0;
+  let activeRecently = 0;
+  let totalTrees = 0;
+  let totalLeaves = 0;
+  for (const row of statsRows) {
+    const trees = JSON.parse(row.trees);
+    if (trees.length > 0) withTrees++;
+    if (now - row.updated_at < 10 * 60 * 1000) activeRecently++;
+    totalTrees += trees.length;
+    totalLeaves += row.leaves;
+  }
 
   return (
     '📊 Статистика\n\n' +
-    `Писали боту: ${totalUsers}\n` +
-    `Открывали игру: ${players.length}\n` +
+    `Писали боту: ${userCountRow.c}\n` +
+    `Открывали игру: ${statsRows.length}\n` +
     `С посаженными деревьями: ${withTrees}\n` +
     `Активны за последние 10 мин: ${activeRecently}\n` +
     `Всего деревьев посажено: ${totalTrees}\n` +
@@ -257,8 +253,18 @@ export default {
 
     const chatId = message.chat.id;
     // Records every chat id that has ever messaged the bot, so a future
-    // broadcast has someone to reach — best-effort, doesn't block the reply.
-    if (env.USERS) ctx.waitUntil(env.USERS.put(`user:${chatId}`, String(Date.now())));
+    // broadcast has someone to reach — best-effort, doesn't block the
+    // reply. In D1 (see handleStatsWrite for why), not KV.
+    if (env.DB) {
+      ctx.waitUntil(
+        env.DB.prepare(
+          `INSERT INTO users (chat_id, first_seen, last_seen) VALUES (?, ?, ?)
+           ON CONFLICT(chat_id) DO UPDATE SET last_seen = excluded.last_seen`,
+        )
+          .bind(String(chatId), Date.now(), Date.now())
+          .run(),
+      );
+    }
     const text = (message.text || '').trim();
     const startMatch = text.match(/^\/start(?:\s+(\S+))?$/);
     const refMatch = startMatch?.[1]?.match(/^ref(\d+)$/);
