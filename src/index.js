@@ -3,7 +3,7 @@
 // — so the same source file can run as either without a fork.
 const DEFAULT_APP_URL = 'https://uhfff.github.io/leaf-garden/';
 const DEFAULT_BOT_USERNAME = 'LeafSimulatorBot';
-const REFERRAL_BONUS_LEAVES = '5 триллионов';
+const REFERRAL_BONUS_LEAVES = '2.5 миллиарда';
 
 function openGardenKeyboard(appUrl) {
   return { inline_keyboard: [[{ text: '🌱 Открыть сад', web_app: { url: appUrl } }]] };
