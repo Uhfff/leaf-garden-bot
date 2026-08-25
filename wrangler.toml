@@ -2,16 +2,11 @@ name = "leaf-garden-bot"
 main = "src/index.js"
 compatibility_date = "2025-01-01"
 
-# Referral-lock records only ('referred:<chatId>') — low write volume,
-# well within the free tier. User registration and stats moved to D1
-# below after KV's 1,000-writes/day free limit got hit by continuous
-# stats reporting.
-[[kv_namespaces]]
-binding = "USERS"
-id = "d480047ca477456fb148ac849f861f8e"
-
-# User registration ('users' table) and per-player stats ('stats' table).
-# D1's free tier write allowance is orders of magnitude past KV's.
+# All persistent bot state lives here: user registration, per-player
+# stats, and referral locks. Used to be split across this D1 database and
+# a KV namespace — moved everything here for one less service to reason
+# about, since KV's remaining job (referral locks) never actually needed
+# KV specifically, just somewhere to persist a row.
 [[d1_databases]]
 binding = "DB"
 database_name = "leaf-garden-db"

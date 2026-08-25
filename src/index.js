@@ -275,16 +275,22 @@ export default {
       // dedup on the game side is per browser, not per Telegram account, so
       // without this check the same person could farm their own bonus.
       //
-      // Each invited person is locked to whoever referred them first —
-      // 'referred:<chatId>' records that once and never gets overwritten,
-      // so re-visiting a different referral link later (or the same one
-      // again) doesn't let someone collect a second referrer's bonus off
-      // the same account, and doesn't spam a second referrer with a
-      // notification for a person who was never really "theirs".
-      if (String(referrerId) !== String(chatId) && env.USERS) {
-        const alreadyReferred = await env.USERS.get(`referred:${chatId}`);
+      // Each invited person is locked to whoever referred them first — the
+      // 'referrals' row is written once and never updated, so re-visiting
+      // a different referral link later (or the same one again) doesn't
+      // let someone collect a second referrer's bonus off the same
+      // account, and doesn't spam a second referrer with a notification
+      // for a person who was never really "theirs".
+      if (String(referrerId) !== String(chatId) && env.DB) {
+        const alreadyReferred = await env.DB.prepare('SELECT 1 FROM referrals WHERE chat_id = ?')
+          .bind(String(chatId))
+          .first();
         if (!alreadyReferred) {
-          ctx.waitUntil(env.USERS.put(`referred:${chatId}`, referrerId));
+          ctx.waitUntil(
+            env.DB.prepare('INSERT INTO referrals (chat_id, referrer_id, created_at) VALUES (?, ?, ?)')
+              .bind(String(chatId), String(referrerId), Date.now())
+              .run(),
+          );
           const giftUrl = `${appUrl}?gift=${encodeURIComponent(`ref:${referrerId}:${chatId}`)}`;
           await sendMessage(
             env.BOT_TOKEN,
